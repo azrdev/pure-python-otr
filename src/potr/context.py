@@ -21,7 +21,7 @@ from __future__ import unicode_literals
 try:
     type(basestring)
 except NameError:
-    # all strings are unicode in python3k
+    # all strings are unicode in python3
     basestring = str
     unicode = str
 
@@ -74,6 +74,16 @@ RECEIVED    = True
 
 
 class Context(object):
+    """Represents our end of one private communication channel to one
+    recipient. There maybe multiple channels and thus `Context`s for one
+    correspondent, organised as a master and multiple child contexts - all
+    handled by the `Account` class.
+
+    In your application, subclass `Context` and overwrite the following methods:
+    - getPolicy
+    - inject
+    """
+
     def __init__(self, account, peername, instag=INSTAG_MASTER):
         self.user = account
         self.peer = peername
@@ -89,6 +99,10 @@ class Context(object):
         self.fragment = FragmentAccumulator()
 
     def getPolicy(self, key):
+        """Get the boolean value a policy named `key` is set to.
+        Policy names are listed in the protocol definition.
+        """
+
         raise NotImplementedError
 
     def inject(self, msg, appdata=None):
@@ -101,11 +115,13 @@ class Context(object):
         self.user.removeFingerprint(self.trustName, fingerprint)
 
     def setTrust(self, fingerprint, trustLevel):
-        ''' sets the trust level for the given fingerprint.
+        """sets the trust level for the given fingerprint.
         trust is usually:
             - the empty string for known but untrusted keys
             - 'verified' for manually verified keys
-            - 'smp' for smp-style verified keys '''
+            - 'smp' for smp-style verified keys
+        """
+
         self.user.setTrust(self.trustName, fingerprint, trustLevel)
 
     def getTrust(self, fingerprint, default=None):
@@ -118,16 +134,20 @@ class Context(object):
         return self.crypto.theirPubkey
 
     def getCurrentTrust(self):
-        ''' returns a 2-tuple: first element is the current fingerprint,
-            second is:
-            - None if the key is unknown yet
-            - a non-empty string if the key is trusted
-            - an empty string if the key is untrusted '''
+        """returns a 2-tuple: first element is the current fingerprint,
+        second is:
+        - None if the key is unknown yet
+        - a non-empty string if the key is trusted
+        - an empty string if the key is untrusted
+        """
+
         if self.crypto.theirPubkey is None:
             return None
         return self.getTrust(self.crypto.theirPubkey.cfingerprint(), None)
 
     def updateRecent(self, direction):
+        """Update the master context that we communicated recently."""
+
         self.master.recentChild = self
         if direction == SENT:
             self.lastSent = time()
@@ -137,6 +157,11 @@ class Context(object):
             self.master.recentRcvdChild = self
 
     def receiveMessage(self, messageData, appdata=None):
+        """Process the incoming `messageData` according to policies and current
+        state. Return the decrypted plaintext or (None, []). If not an OTR
+        message or an error, throws specific exceptions (e.g. NotOTRMessage).
+        """
+
         IGN = None, []
 
         if not self.policyOtrEnabled():
@@ -149,7 +174,7 @@ class Context(object):
             return IGN
 
         logger.debug(repr(message))
-        
+
         self.updateRecent(RECEIVED)
 
         if self.getPolicy('SEND_TAG'):
@@ -165,7 +190,9 @@ class Context(object):
             self.handleQuery(message, appdata=appdata)
 
             if isinstance(message, proto.TaggedPlaintext):
-                # it's actually a plaintext message
+                # it's actually a plaintext message,
+                # so care about the plaintext, too
+
                 if self.state != STATE_PLAINTEXT or \
                         self.getPolicy('REQUIRE_ENCRYPTION'):
                     # but we don't want plaintexts
@@ -184,7 +211,7 @@ class Context(object):
 
             if self.state != STATE_ENCRYPTED:
                 self.sendInternal(proto.Error(
-                        'You sent encrypted data, but I wasn\'t expecting it.'
+                        "You sent encrypted data, but I wasn't expecting it."
                         ), appdata=appdata)
                 if ignore:
                     return IGN
@@ -204,6 +231,7 @@ class Context(object):
         if isinstance(message, basestring):
             if self.state != STATE_PLAINTEXT or \
                     self.getPolicy('REQUIRE_ENCRYPTION'):
+                # we currently don't expect or accept plaintext
                 raise UnencryptedMessage(message)
 
         if isinstance(message, proto.Error):
@@ -216,6 +244,12 @@ class Context(object):
                 flags=proto.MSGFLAGS_IGNORE_UNREADABLE)
 
     def sendMessage(self, sendPolicy, msg, flags=0, tlvs=[], appdata=None):
+        """Process the plaintext `msg`, depending on current policy passing it
+        through encryption. Return the processed bytes.
+        `sendPolicy` specifies if and how fragmentation of (long) messages
+        should take place, through one of the FRAGMENT_* constants.
+        """
+
         if self.policyOtrEnabled():
             self.updateRecent(SENT)
 
@@ -238,6 +272,13 @@ class Context(object):
         return msg
 
     def processOutgoingMessage(self, msg, flags, tlvs=[]):
+        """Process the plaintext `msg` to be sent and return the ciphertext (or
+        an OTR query, as specified by the configured policy).
+        `flags` specifies the bitfield as specified in the protocol Data Message.
+        `tlvs` are appended to the message, if possible.
+        """
+        #TODO: tlvs are discarded if not STATE_ENCRYPTED ?
+
         isQuery = isinstance(self.parse(msg), proto.Query)
         if isQuery:
             return self.user.getDefaultQueryMessage(self.getPolicy)
@@ -245,9 +286,11 @@ class Context(object):
         if self.state == STATE_PLAINTEXT:
             if self.getPolicy('REQUIRE_ENCRYPTION'):
                 if not isQuery:
+                    # queue message
                     self.lastMessage = msg
                     self.updateRecent(SENT)
                     self.mayRetransmit = 2
+                    # and send query
                     # TODO notify
                     msg = self.user.getDefaultQueryMessage(self.getPolicy)
                 return msg
@@ -268,6 +311,8 @@ class Context(object):
             raise NotEncryptedError(EXC_FINISHED)
 
     def disconnect(self, appdata=None):
+        """Finish the private connection and request the correspondent to do the same"""
+
         if self.state != STATE_FINISHED:
             self.sendInternal(b'', tlvs=[proto.DisconnectTLV()], appdata=appdata)
             self.setState(STATE_PLAINTEXT)
@@ -282,6 +327,12 @@ class Context(object):
         self.setState(STATE_ENCRYPTED)
 
     def sendFragmented(self, msg, policy=FRAGMENT_SEND_ALL, appdata=None):
+        """If `msg` needs fragmentation and `policy` allows it, fragment the
+        message according to it and `inject` the fragments. Always returns the
+        next bit of data to be sent by the caller (i.e. either the last
+        fragment or the original message.
+        """
+
         mms = self.maxMessageSize(appdata)
         msgLen = len(msg)
         if mms != 0 and msgLen > mms:
@@ -319,6 +370,8 @@ class Context(object):
                 return msg
 
     def processTLVs(self, tlvs, appdata=None):
+        """Take action upon each TLV in `tlvs`."""
+
         for tlv in tlvs:
             if isinstance(tlv, proto.DisconnectTLV):
                 logger.info('got disconnect tlv, forcing finished state')
@@ -355,32 +408,40 @@ class Context(object):
         self.crypto.smpSecret(secret, question=question, appdata=appdata)
 
     def handleQuery(self, message, appdata=None):
+        """Act upon a received query message"""
+
         if 2 in message.versions and self.getPolicy('ALLOW_V2'):
             self.authStartV2(appdata=appdata)
         elif 1 in message.versions and self.getPolicy('ALLOW_V1'):
             self.authStartV1(appdata=appdata)
 
     def authStartV1(self, appdata=None):
+        """Request a OTR version 1 communication from the correspondent"""
+
         raise NotImplementedError()
 
     def authStartV2(self, appdata=None):
+        """Request a OTR version 2 communication from the correspondent"""
+
         self.crypto.startAKE(appdata=appdata)
 
     def parse(self, message):
         return proto.OTRMessage.parse(message, self)
 
     def maxMessageSize(self, appdata=None):
-        """Return the max message size for this context."""
+        """Return the maximum message size for this context."""
+
         return self.user.maxMessageSize
 
     def getExtraKey(self, extraKeyAppId=None, extraKeyAppData=None, appdata=None):
-        """ retrieves the generated extra symmetric key.
+        """Retrieves the generated extra symmetric key.
 
-        if extraKeyAppId is set, notifies the chat partner about intended
+        If extraKeyAppId is set, notifies the chat partner about intended
         usage (additional application specific information can be supplied in
         extraKeyAppData).
 
-        returns the 256 bit symmetric key """
+        Returns the 256 bit symmetric key.
+        """
 
         if self.state != STATE_ENCRYPTED:
             raise NotEncryptedError
@@ -390,7 +451,19 @@ class Context(object):
         return self.crypto.extraKey
 
 class Account(object):
+    """OTR functionality related to one own instant messaging account, e.g. a
+    jabber-id. Create one instance for each account you wish should have OTR
+    support.
+    You must provide the link to your application by subclassing Account and
+    implementing:
+    - `contextclass` - the Context class to use (subclass of `potr.Context`)
+    - loadPrivkey
+    - savePrivkey
+    - saveTrusts
+    """
+
     contextclass = Context
+
     def __init__(self, name, protocol, maxMessageSize, privkey=None):
         self.name = name
         self.privkey = privkey
@@ -409,6 +482,8 @@ class Account(object):
                 name=self.name)
 
     def getPrivkey(self, autogen=True):
+        """Get our private key, or generate if we don't have one, yet."""
+
         if self.privkey is None:
             self.privkey = self.loadPrivkey()
         if self.privkey is None:
@@ -420,17 +495,30 @@ class Account(object):
         return self.privkey
 
     def loadPrivkey(self):
+        """Load and return from persistend storage our private key, or None."""
+
         raise NotImplementedError
 
     def savePrivkey(self):
+        """Our private key has changed, push it to persistent storage."""
+
         raise NotImplementedError
 
     def saveTrusts(self):
+        """The trusted fingerprints have changed, push data to persistent storage."""
+
         raise NotImplementedError
 
     def getContext(self, uid, instag=INSTAG_MASTER, newCtxCb=None):
+        """Lookup the context responsible for handling OTR messages, depending on
+        the instance tag `instag`, and the protocol user id `uid` (e.g. a
+        jabber-ID with resource). May create a context, if there is none
+        matching the arguments. Supply a callable in newCtxCb to have it
+        notified when a new context is created.
+        """
+
         if uid not in self.ctxs:
-            # no master context found, create on first
+            # no master context found, create one first
             newctx = self.contextclass(self, uid, instag=INSTAG_MASTER)
 
             newctx.master = newctx
@@ -447,6 +535,7 @@ class Account(object):
         if instag == INSTAG_MASTER:
             return master
 
+        # select directly named context
         elif instag >= MIN_VALID_INSTAG:
             if instag not in self.ctxs[uid]:
                 # no instance context found, create
@@ -457,6 +546,7 @@ class Account(object):
                     newCtxCb(ctx)
             else:
                 ctx = self.ctxs[uid][instag]
+        # select context by heuristic
         else:
             if instag == INSTAG_RECENT:
                 ctx = master.recentChild
@@ -469,26 +559,38 @@ class Account(object):
             else:
                 raise ValueError(
                         'unknown meta instance tag {tag!r}'.format(tag=instag))
-        
+
         return ctx
 
     def getDefaultQueryMessage(self, policy):
+        """Return the (plaintext) message string which is sent to correspondents
+        to request OTR encryption.
+        """
+
         v  = '2' if policy('ALLOW_V2') else ''
         msg = self.defaultQuery.format(versions=v)
         return msg.encode('ascii')
 
     def setTrust(self, key, fingerprint, trustLevel):
+        """Change trust for `fingerprint` associated with account `key` to `trustLevel`."""
+
         if key not in self.trusts:
             self.trusts[key] = {}
         self.trusts[key][fingerprint] = trustLevel
         self.saveTrusts()
 
     def getTrust(self, key, fingerprint, default=None):
+        """Get trust status for `fingerprint` associated with account `key`."""
+
         if key not in self.trusts:
             return default
         return self.trusts[key].get(fingerprint, default)
 
     def removeFingerprint(self, key, fingerprint):
+        """Delete `fingerprint` associated with account `key` from the trusted
+        ones, resetting it to unknown.
+        """
+
         if key in self.trusts and fingerprint in self.trusts[key]:
             del self.trusts[key][fingerprint]
 
@@ -548,10 +650,15 @@ class FragmentAccumulator(object):
         return None
 
 class NotEncryptedError(RuntimeError):
+    """We're currently not encrypting and something was requested requiring it"""
     pass
+
 class UnencryptedMessage(RuntimeError):
+    """We got plaintext, but are not willing to get plaintext now"""
     pass
 class ErrorReceived(RuntimeError):
+    """The correspondent sent us this OTR error"""
     pass
 class NotOTRMessage(RuntimeError):
+    """The message we should handle has nothing to do with OTR"""
     pass

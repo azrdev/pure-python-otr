@@ -51,6 +51,7 @@ def AESCTR(key, counter=0):
         raise TypeError
     return Cipher.AES.new(key, Cipher.AES.MODE_CTR, counter=counter)
 
+#TODO: replace by collections.Counter
 class Counter(object):
     def __init__(self, prefix):
         self.prefix = prefix
