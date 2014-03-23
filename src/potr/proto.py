@@ -19,7 +19,6 @@
 from __future__ import unicode_literals
 
 import base64
-import logging
 import struct
 from potr.utils import pack_mpi, read_mpi, pack_data, read_data, unpack
 
@@ -65,6 +64,8 @@ def registermessage(cls):
 def registertlv(cls):
     if not hasattr(cls, 'parsePayload'):
         raise TypeError('registered tlv types need parsePayload()')
+    if cls.typ is None:
+        raise TypeError('registered tlv type needs type ID')
     tlvClasses[cls.typ] = cls
     return cls
 
@@ -87,16 +88,6 @@ class OTRMessage(object):
     __slots__ = ['payload']
     version = 0x0002
     msgtype = 0
-    def __init__(self, payload):
-        self.payload = payload
-
-    def getPayload(self):
-        return self.payload
-
-    def __bytes__(self):
-        data = struct.pack(b'!HB', self.version, self.msgtype) \
-                + self.getPayload()
-        return b'?OTR:' + base64.b64encode(data) + b'.'
 
     def __eq__(self, other):
         if not isinstance(other, self.__class__):
@@ -155,6 +146,7 @@ class OTRMessage(object):
 class Error(OTRMessage):
     __slots__ = ['error']
     def __init__(self, error):
+        super(Error, self).__init__()
         self.error = error
 
     def __repr__(self):
@@ -166,13 +158,14 @@ class Error(OTRMessage):
 class Query(OTRMessage):
     __slots__ = ['versions']
     def __init__(self, versions=set()):
+        super(Query, self).__init__()
         self.versions = versions
 
     @classmethod
     def parse(cls, data):
         if not isinstance(data, bytes):
             raise TypeError('can only parse bytes')
-        udata = data.decode('ascii')
+        udata = data.decode('ascii', errors='replace')
 
         versions = set()
         if len(udata) > 0 and udata[0] == '?':
@@ -203,8 +196,8 @@ class Query(OTRMessage):
 class TaggedPlaintext(Query):
     __slots__ = ['msg']
     def __init__(self, msg, versions):
+        super(TaggedPlaintext, self).__init__(versions)
         self.msg = msg
-        self.versions = versions
 
     def __bytes__(self):
         data = self.msg + MESSAGE_TAG_BASE
@@ -230,7 +223,10 @@ class TaggedPlaintext(Query):
 
 class GenericOTRMessage(OTRMessage):
     __slots__ = ['data']
+    fields  = []
+
     def __init__(self, *args):
+        super(GenericOTRMessage, self).__init__()
         if len(args) != len(self.fields):
             raise TypeError('%s needs %d arguments, got %d' %
                     (self.__class__.__name__, len(self.fields), len(args)))
@@ -252,6 +248,11 @@ class GenericOTRMessage(OTRMessage):
             self.__getattr__(attr) # existence check
             self.data[attr] = val
 
+    def __bytes__(self):
+        data = struct.pack(b'!HB', self.version, self.msgtype) \
+                + self.getPayload()
+        return b'?OTR:' + base64.b64encode(data) + b'.'
+
     def __repr__(self):
         name = self.__class__.__name__
         data = ''
@@ -263,11 +264,10 @@ class GenericOTRMessage(OTRMessage):
     def parsePayload(cls, data):
         data = base64.b64decode(data)
         args = []
-        for k, ftype in cls.fields:
+        for _, ftype in cls.fields:
             if ftype == 'data':
                 value, data = read_data(data)
             elif isinstance(ftype, bytes):
-                size = int(struct.calcsize(ftype))
                 value, data = unpack(ftype, data)
             elif isinstance(ftype, int):
                 value, data = data[:ftype], data[ftype:]
@@ -290,26 +290,24 @@ class GenericOTRMessage(OTRMessage):
 
 class AKEMessage(GenericOTRMessage):
     __slots__ = []
-    pass
 
 @registermessage
 class DHCommit(AKEMessage):
     __slots__ = []
     msgtype = 0x02
-    fields = [('encgx','data'), ('hashgx','data'), ]
-
+    fields = [('encgx', 'data'), ('hashgx', 'data'), ]
 
 @registermessage
 class DHKey(AKEMessage):
     __slots__ = []
     msgtype = 0x0a
-    fields = [('gy','data'), ]
+    fields = [('gy', 'data'), ]
 
 @registermessage
 class RevealSig(AKEMessage):
     __slots__ = []
     msgtype = 0x11
-    fields = [('rkey','data'), ('encsig','data'), ('mac',20),]
+    fields = [('rkey', 'data'), ('encsig', 'data'), ('mac', 20),]
 
     def getMacedData(self):
         p = self.encsig
@@ -319,7 +317,7 @@ class RevealSig(AKEMessage):
 class Signature(AKEMessage):
     __slots__ = []
     msgtype = 0x12
-    fields = [('encsig','data'), ('mac',20)]
+    fields = [('encsig', 'data'), ('mac', 20)]
 
     def getMacedData(self):
         p = self.encsig
@@ -329,8 +327,9 @@ class Signature(AKEMessage):
 class DataMessage(GenericOTRMessage):
     __slots__ = []
     msgtype = 0x03
-    fields = [('flags',b'!B'), ('skeyid',b'!I'), ('rkeyid',b'!I'), ('dhy','data'),
-            ('ctr',8), ('encmsg','data'), ('mac',20), ('oldmacs','data'), ]
+    fields = [('flags', b'!B'), ('skeyid', b'!I'), ('rkeyid', b'!I'),
+            ('dhy', 'data'), ('ctr', 8), ('encmsg', 'data'), ('mac', 20),
+            ('oldmacs', 'data'), ]
 
     def getMacedData(self):
         return struct.pack(b'!HB', self.version, self.msgtype) + \
@@ -339,6 +338,10 @@ class DataMessage(GenericOTRMessage):
 @bytesAndStrings
 class TLV(object):
     __slots__ = []
+    typ = None
+
+    def getPayload(self):
+        raise NotImplementedError
 
     def __repr__(self):
         val = self.getPayload()
@@ -376,6 +379,7 @@ class PaddingTLV(TLV):
     __slots__ = ['padding']
 
     def __init__(self, padding):
+        super(PaddingTLV, self).__init__()
         self.padding = padding
 
     def getPayload(self):
@@ -389,7 +393,7 @@ class PaddingTLV(TLV):
 class DisconnectTLV(TLV):
     typ = 1
     def __init__(self):
-        pass
+        super(DisconnectTLV, self).__init__()
 
     def getPayload(self):
         return b''
@@ -403,8 +407,14 @@ class DisconnectTLV(TLV):
 
 class SMPTLV(TLV):
     __slots__ = ['mpis']
+    dlen = None
 
-    def __init__(self, mpis=[]):
+    def __init__(self, mpis=None):
+        super(SMPTLV, self).__init__()
+        if mpis is None:
+            mpis = []
+        if self.dlen is None:
+            raise TypeError('no amount of mpis specified in dlen')
         if len(mpis) != self.dlen:
             raise TypeError('expected {0} mpis, got {1}'
                     .format(self.dlen, len(mpis)))
@@ -421,7 +431,7 @@ class SMPTLV(TLV):
         mpis = []
         if cls.dlen > 0:
             count, data = unpack(b'!I', data)
-            for i in range(count):
+            for _ in range(count):
                 n, data = read_mpi(data)
                 mpis.append(n)
         if len(data) > 0:
@@ -482,6 +492,7 @@ class ExtraKeyTLV(TLV):
     __slots__ = ['appid', 'appdata']
 
     def __init__(self, appid, appdata):
+        super(ExtraKeyTLV, self).__init__()
         self.appid = appid
         self.appdata = appdata
         if appdata is None:
