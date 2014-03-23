@@ -30,6 +30,7 @@ MESSAGE_TAGS = {
         3:b'  \t\t  \t\t',
     }
 
+# TODO: unneeded
 MSGTYPE_NOTOTR = 0
 MSGTYPE_TAGGEDPLAINTEXT = 1
 MSGTYPE_QUERY = 2
@@ -42,7 +43,8 @@ MSGTYPE_DATA = 8
 MSGTYPE_ERROR = 9
 MSGTYPE_UNKNOWN = -1
 
-MSGFLAGS_IGNORE_UNREADABLE = 1
+class MessageFlags(object):
+    IGNORE_UNREADABLE = 1
 
 tlvClasses = {}
 messageClasses = {}
@@ -71,7 +73,7 @@ def registertlv(cls):
 
 
 def getslots(cls, base):
-    ''' helper to collect all the message slots from ancestors '''
+    """Helper to collect all the message slots from ancestors."""
     clss = [cls]
     
     for cls in clss:
@@ -101,12 +103,14 @@ class OTRMessage(object):
     @staticmethod
     def parse(data, ctx):
         otrTagPos = data.find(OTRTAG)
+        # no OTR tag, get tagged plaintext or only plaintext
         if otrTagPos == -1:
             return TaggedPlaintext.parse(data)
 
         indexBase = otrTagPos + len(OTRTAG)
         compare = data[indexBase]
 
+        # OTRv2 message fragment
         if compare == b','[0]:
             data = ctx.fragment.process(data[indexBase:])
             if data is None:
@@ -115,8 +119,12 @@ class OTRMessage(object):
         else:
             ctx.fragment.discard()
 
+        # OTRv3 message fragment
+        #TODO
+
         hasq = compare == b'?'[0]
         hasv = compare == b'v'[0]
+        # OTR Query message
         if hasq or hasv:
             hasv |= len(data) > indexBase+1 and \
                     data[indexBase+1] == b'v'[0]
@@ -127,6 +135,7 @@ class OTRMessage(object):
             payload = data[indexBase:end]
             return Query.parse(payload)
 
+        # OTR binary message
         if compare == b':'[0] and len(data) > indexBase + 4:
             infoTag = base64.b64decode(data[indexBase+1:indexBase+5])
             classInfo = struct.unpack(b'!HB', infoTag)
@@ -135,9 +144,11 @@ class OTRMessage(object):
                 return data
             return cls.parsePayload(data[indexBase+5:])
 
+        # OTR Error message
         if data[indexBase:indexBase+7] == b' Error:':
             return Error(data[indexBase+7:])
 
+        # plaintext - fallback, should be handled by the TaggedPlaintext branch
         return data
 
     def __neq__(self, other):
@@ -213,6 +224,7 @@ class TaggedPlaintext(Query):
     def parse(cls, data):
         tagPos = data.find(MESSAGE_TAG_BASE)
         if tagPos < 0:
+            # no tag found, return plaintext data
             return data
 
         tags = [ data[i:i+8] for i in range(tagPos, len(data), 8) ]

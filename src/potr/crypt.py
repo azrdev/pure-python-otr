@@ -29,12 +29,12 @@ from potr import proto
 
 logger = logging.getLogger(__name__)
 
-STATE_NONE = 0
-STATE_AWAITING_DHKEY = 1
-STATE_AWAITING_REVEALSIG = 2
-STATE_AWAITING_SIG = 4
-STATE_V1_SETUP = 5
-
+class AuthState(object):
+    NONE = 0
+    AWAITING_DHKEY = 1
+    AWAITING_REVEALSIG = 2
+    AWAITING_SIG = 4
+    V1_SETUP = 5
 
 DH_MODULUS = 2410312426921032588552076022197566074856950548502459942654116941958108831682612228890093858261341614673227141477904012196503648957050582631942730706805009223062734745341073406696246014589361659774041027169249453200378729434170325843778659198143763193776859869524088940195577346119843545301547043747207749969763750084308926339295559968882457872412993810129130294592999947926365264059284647209730384947211681434464714438488520940127459844288859336526896320919633919
 DH_MODULUS_2 = DH_MODULUS-2
@@ -235,7 +235,7 @@ class CryptEngine(object):
                 .format(sess.sendenc, sess.sendmac, sess.sendctr))
 
         # plaintext + TLVS
-        plainBuf = message + b'\0' + b''.join([ bytes(t) for t in tlvs])
+        plainBuf = message + b'\0' + b''.join((bytes(t) for t in tlvs))
         encmsg = AESCTR(sess.sendenc, sess.sendctr).encrypt(plainBuf)
 
         msg = proto.DataMessage(flags, self.ourKeyid-1, self.theirKeyid,
@@ -269,7 +269,7 @@ class CryptEngine(object):
             return
 
         if isinstance(inMsg, proto.DHCommit):
-            if self.ake is None or self.ake.state != STATE_AWAITING_REVEALSIG:
+            if self.ake is None or self.ake.state != AuthState.AWAITING_REVEALSIG:
                 self.ake = AuthKeyExchange(self.ctx.user.getPrivkey(),
                         self.goEncrypted)
             outMsg = self.ake.handleDHCommit(inMsg)
@@ -325,7 +325,7 @@ class CryptEngine(object):
 class AuthKeyExchange(object):
     def __init__(self, privkey, onSuccess):
         self.privkey = privkey
-        self.state = STATE_NONE
+        self.state = AuthState.NONE
         self.r = None
         self.encgx = None
         self.hashgx = None
@@ -354,7 +354,7 @@ class AuthKeyExchange(object):
         self.hashgx = SHA256(gxmpi)
         self.encgx = AESCTR(self.r).encrypt(gxmpi)
 
-        self.state = STATE_AWAITING_DHKEY
+        self.state = AuthState.AWAITING_DHKEY
 
         return proto.DHCommit(self.encgx, self.hashgx)
 
@@ -362,11 +362,11 @@ class AuthKeyExchange(object):
         self.encgx = msg.encgx
         self.hashgx = msg.hashgx
 
-        self.state = STATE_AWAITING_REVEALSIG
+        self.state = AuthState.AWAITING_REVEALSIG
         return proto.DHKey(long_to_bytes(self.dh.pub))
 
     def handleDHKey(self, msg):
-        if self.state == STATE_AWAITING_DHKEY:
+        if self.state == AuthState.AWAITING_DHKEY:
             self.gy = bytes_to_long(msg.gy)
 
             # check 2 <= g**y <= p-2
@@ -378,14 +378,14 @@ class AuthKeyExchange(object):
 
             aesxb = self.calculatePubkeyAuth(self.enc_c, self.mac_m1)
 
-            self.state = STATE_AWAITING_SIG
+            self.state = AuthState.AWAITING_SIG
 
             self.lastmsg = proto.RevealSig(self.r, aesxb, b'')
             self.lastmsg.mac = SHA256HMAC160(self.mac_m2,
                     self.lastmsg.getMacedData())
             return self.lastmsg
 
-        elif self.state == STATE_AWAITING_SIG:
+        elif self.state == AuthState.AWAITING_SIG:
             logger.info('received DHKey while not awaiting DHKEY')
             if msg.gy == self.gy:
                 logger.info('resending revealsig')
@@ -394,7 +394,7 @@ class AuthKeyExchange(object):
             logger.info('bad state for DHKey')
 
     def handleRevealSig(self, msg):
-        if self.state != STATE_AWAITING_REVEALSIG:
+        if self.state != AuthState.AWAITING_REVEALSIG:
             logger.error('bad state for RevealSig')
             raise InvalidParameterError
 
@@ -423,14 +423,14 @@ class AuthKeyExchange(object):
         self.onSuccess(self)
 
         self.ourKeyid = 0
-        self.state = STATE_NONE
+        self.state = AuthState.NONE
 
         cmpmac = struct.pack(b'!I', len(aesxb)) + aesxb
 
         return proto.Signature(aesxb, SHA256HMAC160(self.mac_m2p, cmpmac))
 
     def handleSignature(self, msg):
-        if self.state != STATE_AWAITING_SIG:
+        if self.state != AuthState.AWAITING_SIG:
             logger.error('bad state (%d) for Signature', self.state)
             raise InvalidParameterError
 
@@ -445,7 +445,7 @@ class AuthKeyExchange(object):
         self.onSuccess(self)
 
         self.ourKeyid = 0
-        self.state = STATE_NONE
+        self.state = AuthState.NONE
 
     def createAuthKeys(self):
         s = pow(self.gy, self.dh.priv, DH_MODULUS)

@@ -46,28 +46,42 @@ from potr import compatcrypto
 
 from time import time
 
-EXC_UNREADABLE_MESSAGE = 1
-EXC_FINISHED = 2
-
 HEARTBEAT_INTERVAL = 60
-STATE_PLAINTEXT = 0
-STATE_ENCRYPTED = 1
-STATE_FINISHED = 2
-FRAGMENT_SEND_ALL = 0
-FRAGMENT_SEND_ALL_BUT_FIRST = 1
-FRAGMENT_SEND_ALL_BUT_LAST = 2
 
-OFFER_NOTSENT = 0
-OFFER_SENT = 1
-OFFER_REJECTED = 2
-OFFER_ACCEPTED = 3
+class OTRState(object):
+    PLAINTEXT = 0
+    ENCRYPTED = 1
+    FINISHED = 2
 
-INSTAG_MASTER           = 0
-INSTAG_BEST             = 1
-INSTAG_RECENT           = 2
-INSTAG_RECENT_RECEIVED  = 3
-INSTAG_RECENT_SENT      = 4
-MIN_VALID_INSTAG        = 0x100
+class FragmentSendPolicy(object):
+    """Which fragments `Context.sendFragmented` should send."""
+    ALL = 0
+    ALL_BUT_FIRST = 1
+    ALL_BUT_LAST = 2
+
+class OfferState(object):
+    """State of our whitespace tag offer."""
+
+    NOTSENT = 0
+    SENT = 1
+    REJECTED = 2
+    ACCEPTED = 3
+
+class Instag(object):
+    """Special instance tags"""
+
+    MASTER           = 0
+    """The master `Context` / no particular Context at all"""
+    BEST             = 1
+    """The Context with the strongest encryption available"""
+    RECENT           = 2
+    """The Context which saw communication most recently"""
+
+    RECENT_RECEIVED  = 3
+    RECENT_SENT      = 4
+
+    MIN_VALID        = 0x100
+    """The smallest non-special instance tag"""
 
 SENT        = False
 RECEIVED    = True
@@ -84,17 +98,17 @@ class Context(object):
     - inject
     """
 
-    def __init__(self, account, peername, instag=INSTAG_MASTER):
+    def __init__(self, account, peername, instag=Instag.MASTER):
         self.user = account
         self.peer = peername
         self.policy = {}
         self.crypto = crypt.CryptEngine(self)
-        self.tagOffer = OFFER_NOTSENT
+        self.tagOffer = OfferState.NOTSENT
         self.mayRetransmit = 0
         self.lastSent = 0
         self.lastRecv = 0
         self.lastMessage = None
-        self.state = STATE_PLAINTEXT
+        self.state = OTRState.PLAINTEXT
         self.trustName = self.peer
         self.fragment = FragmentAccumulator()
 
@@ -181,10 +195,10 @@ class Context(object):
             if isinstance(message, basestring):
                 # received a plaintext message without tag
                 # we should not tag anymore
-                self.tagOffer = OFFER_REJECTED
+                self.tagOffer = OfferState.REJECTED
             else:
                 # got something OTR-ish, cool!
-                self.tagOffer = OFFER_ACCEPTED
+                self.tagOffer = OfferState.ACCEPTED
 
         if isinstance(message, proto.Query):
             self.handleQuery(message, appdata=appdata)
@@ -193,7 +207,7 @@ class Context(object):
                 # it's actually a plaintext message,
                 # so care about the plaintext, too
 
-                if self.state != STATE_PLAINTEXT or \
+                if self.state != OTRState.PLAINTEXT or \
                         self.getPolicy('REQUIRE_ENCRYPTION'):
                     # but we don't want plaintexts
                     raise UnencryptedMessage(message.msg)
@@ -207,15 +221,15 @@ class Context(object):
             return IGN
 
         if isinstance(message, proto.DataMessage):
-            ignore = message.flags & proto.MSGFLAGS_IGNORE_UNREADABLE
+            ignore = message.flags & proto.MessageFlags.IGNORE_UNREADABLE
 
-            if self.state != STATE_ENCRYPTED:
+            if self.state != OTRState.ENCRYPTED:
                 self.sendInternal(proto.Error(
                         "You sent encrypted data, but I wasn't expecting it."
                         ), appdata=appdata)
                 if ignore:
                     return IGN
-                raise NotEncryptedError(EXC_UNREADABLE_MESSAGE)
+                raise UnreadableEncryptedMessage()
 
             try:
                 plaintext, tlvs = self.crypto.handleDataMessage(message)
@@ -229,7 +243,7 @@ class Context(object):
                 logger.exception('decryption failed')
                 raise
         if isinstance(message, basestring):
-            if self.state != STATE_PLAINTEXT or \
+            if self.state != OTRState.PLAINTEXT or \
                     self.getPolicy('REQUIRE_ENCRYPTION'):
                 # we currently don't expect or accept plaintext
                 raise UnencryptedMessage(message)
@@ -240,14 +254,14 @@ class Context(object):
         raise NotOTRMessage(messageData)
 
     def sendInternal(self, msg, tlvs=[], appdata=None):
-        self.sendMessage(FRAGMENT_SEND_ALL, msg, tlvs=tlvs, appdata=appdata,
-                flags=proto.MSGFLAGS_IGNORE_UNREADABLE)
+        self.sendMessage(FragmentSendPolicy.ALL, msg, tlvs=tlvs, appdata=appdata,
+                flags=proto.MessageFlags.IGNORE_UNREADABLE)
 
     def sendMessage(self, sendPolicy, msg, flags=0, tlvs=[], appdata=None):
         """Process the plaintext `msg`, depending on current policy passing it
         through encryption. Return the processed bytes.
-        `sendPolicy` specifies if and how fragmentation of (long) messages
-        should take place, through one of the FRAGMENT_* constants.
+        `sendPolicy` is a FragmentSendPolicy specifying if and how fragmentation
+        of (long) messages should take place.
         """
 
         if self.policyOtrEnabled():
@@ -277,13 +291,13 @@ class Context(object):
         `flags` specifies the bitfield as specified in the protocol Data Message.
         `tlvs` are appended to the message, if possible.
         """
-        #TODO: tlvs are discarded if not STATE_ENCRYPTED ?
+        #TODO: tlvs are discarded if not OTRState.ENCRYPTED ?
 
         isQuery = isinstance(self.parse(msg), proto.Query)
         if isQuery:
             return self.user.getDefaultQueryMessage(self.getPolicy)
 
-        if self.state == STATE_PLAINTEXT:
+        if self.state == OTRState.PLAINTEXT:
             if self.getPolicy('REQUIRE_ENCRYPTION'):
                 if not isQuery:
                     # queue message
@@ -294,8 +308,8 @@ class Context(object):
                     # TODO notify
                     msg = self.user.getDefaultQueryMessage(self.getPolicy)
                 return msg
-            if self.getPolicy('SEND_TAG') and self.tagOffer != OFFER_REJECTED:
-                self.tagOffer = OFFER_SENT
+            if self.getPolicy('SEND_TAG') and self.tagOffer != OfferState.REJECTED:
+                self.tagOffer = OfferState.SENT
                 versions = set()
                 if self.getPolicy('ALLOW_V1'):
                     versions.add(1)
@@ -303,34 +317,34 @@ class Context(object):
                     versions.add(2)
                 return proto.TaggedPlaintext(msg, versions)
             return msg
-        if self.state == STATE_ENCRYPTED:
+        if self.state == OTRState.ENCRYPTED:
             msg = self.crypto.createDataMessage(msg, flags, tlvs)
             self.updateRecent(SENT)
             return msg
-        if self.state == STATE_FINISHED:
-            raise NotEncryptedError(EXC_FINISHED)
+        if self.state == OTRState.FINISHED:
+            raise EncryptionFinishedError
 
     def disconnect(self, appdata=None):
         """Finish the private connection and request the correspondent to do the same"""
 
-        if self.state != STATE_FINISHED:
+        if self.state != OTRState.FINISHED:
             self.sendInternal(b'', tlvs=[proto.DisconnectTLV()], appdata=appdata)
-            self.setState(STATE_PLAINTEXT)
+            self.setState(OTRState.PLAINTEXT)
             self.crypto.finished()
         else:
-            self.setState(STATE_PLAINTEXT)
+            self.setState(OTRState.PLAINTEXT)
 
     def setState(self, newstate):
         self.state = newstate
 
     def _wentEncrypted(self):
-        self.setState(STATE_ENCRYPTED)
+        self.setState(OTRState.ENCRYPTED)
 
-    def sendFragmented(self, msg, policy=FRAGMENT_SEND_ALL, appdata=None):
-        """If `msg` needs fragmentation and `policy` allows it, fragment the
-        message according to it and `inject` the fragments. Always returns the
-        next bit of data to be sent by the caller (i.e. either the last
-        fragment or the original message.
+    def sendFragmented(self, msg, policy=FragmentSendPolicy.ALL, appdata=None):
+        """If `msg` needs fragmentation, fragment it and `inject` the fragments.
+        Return the next bit of data to be sent by the caller or None. `policy`
+        decides which of the fragments should be sent and which should be 
+        returned.
         """
 
         mms = self.maxMessageSize(appdata)
@@ -349,21 +363,21 @@ class Context(object):
                 fragments[fi] = b'?OTR,' + ctr.encode('ascii') \
                         + fragments[fi] + b','
 
-            if policy == FRAGMENT_SEND_ALL:
+            if policy == FragmentSendPolicy.ALL:
                 for f in fragments:
                     self.inject(f, appdata=appdata)
                 return None
-            elif policy == FRAGMENT_SEND_ALL_BUT_FIRST:
+            elif policy == FragmentSendPolicy.ALL_BUT_FIRST:
                 for f in fragments[1:]:
                     self.inject(f, appdata=appdata)
                 return fragments[0]
-            elif policy == FRAGMENT_SEND_ALL_BUT_LAST:
+            elif policy == FragmentSendPolicy.ALL_BUT_LAST:
                 for f in fragments[:-1]:
                     self.inject(f, appdata=appdata)
                 return fragments[-1]
 
         else:
-            if policy == FRAGMENT_SEND_ALL:
+            if policy == FragmentSendPolicy.ALL:
                 self.inject(msg, appdata=appdata)
                 return None
             else:
@@ -375,7 +389,7 @@ class Context(object):
         for tlv in tlvs:
             if isinstance(tlv, proto.DisconnectTLV):
                 logger.info('got disconnect tlv, forcing finished state')
-                self.setState(STATE_FINISHED)
+                self.setState(OTRState.FINISHED)
                 self.crypto.finished()
                 # TODO cleanup
                 continue
@@ -385,7 +399,7 @@ class Context(object):
             logger.info('got unhandled tlv: {0!r}'.format(tlv))
 
     def smpAbort(self, appdata=None):
-        if self.state != STATE_ENCRYPTED:
+        if self.state != OTRState.ENCRYPTED:
             raise NotEncryptedError
         self.crypto.smpAbort(appdata=appdata)
 
@@ -397,12 +411,12 @@ class Context(object):
                 if self.crypto.smp else None
 
     def smpGotSecret(self, secret, question=None, appdata=None):
-        if self.state != STATE_ENCRYPTED:
+        if self.state != OTRState.ENCRYPTED:
             raise NotEncryptedError
         self.crypto.smpSecret(secret, question=question, appdata=appdata)
 
     def smpInit(self, secret, question=None, appdata=None):
-        if self.state != STATE_ENCRYPTED:
+        if self.state != OTRState.ENCRYPTED:
             raise NotEncryptedError
         self.crypto.smp = None
         self.crypto.smpSecret(secret, question=question, appdata=appdata)
@@ -443,7 +457,7 @@ class Context(object):
         Returns the 256 bit symmetric key.
         """
 
-        if self.state != STATE_ENCRYPTED:
+        if self.state != OTRState.ENCRYPTED:
             raise NotEncryptedError
         if extraKeyAppId is not None:
             tlvs = [proto.ExtraKeyTLV(extraKeyAppId, extraKeyAppData)]
@@ -509,7 +523,7 @@ class Account(object):
 
         raise NotImplementedError
 
-    def getContext(self, uid, instag=INSTAG_MASTER, newCtxCb=None):
+    def getContext(self, uid, instag=Instag.MASTER, newCtxCb=None):
         """Lookup the context responsible for handling OTR messages, depending on
         the instance tag `instag`, and the protocol user id `uid` (e.g. a
         jabber-ID with resource). May create a context, if there is none
@@ -519,28 +533,28 @@ class Account(object):
 
         if uid not in self.ctxs:
             # no master context found, create one first
-            newctx = self.contextclass(self, uid, instag=INSTAG_MASTER)
+            newctx = self.contextclass(self, uid, instag=Instag.MASTER)
 
             newctx.master = newctx
             newctx.recentChild = newctx
             newctx.recentRcvdChild = newctx
             newctx.recentSentChild = newctx
 
-            self.ctxs[uid] = { INSTAG_MASTER:newctx }
+            self.ctxs[uid] = { Instag.MASTER:newctx }
             if callable(newCtxCb):
                 newCtxCb(newctx)
 
-        master = self.ctxs[uid][INSTAG_MASTER]
+        master = self.ctxs[uid][Instag.MASTER]
 
-        if instag == INSTAG_MASTER:
+        if instag == Instag.MASTER:
             return master
 
         # select directly named context
-        elif instag >= MIN_VALID_INSTAG:
+        elif instag >= Instag.MIN_VALID:
             if instag not in self.ctxs[uid]:
                 # no instance context found, create
                 ctx = self.contextclass(self, uid, instag=instag)
-                ctx.master = self.ctxs[uid][INSTAG_MASTER]
+                ctx.master = self.ctxs[uid][Instag.MASTER]
                 self.ctxs[uid][instag] = ctx
                 if callable(newCtxCb):
                     newCtxCb(ctx)
@@ -548,13 +562,13 @@ class Account(object):
                 ctx = self.ctxs[uid][instag]
         # select context by heuristic
         else:
-            if instag == INSTAG_RECENT:
+            if instag == Instag.RECENT:
                 ctx = master.recentChild
-            elif instag == INSTAG_RECENT_RECEIVED:
+            elif instag == Instag.RECENT_RECEIVED:
                 ctx = master.recentRcvdChild
-            elif instag == INSTAG_RECENT_SENT:
+            elif instag == Instag.RECENT_SENT:
                 ctx = master.recentSentChild
-            elif instag == INSTAG_BEST:
+            elif instag == Instag.BEST:
                 ctx = max(self.ctxs[uid].values(), key=contextMetric)
             else:
                 raise ValueError(
@@ -607,9 +621,10 @@ class FragmentAccumulator(object):
         self.fragments = []
 
     def process(self, message):
-        '''Accumulate a fragmented message. Returns None if the fragment is
-        to be ignored, returns a string if the message is ready for further
-        processing'''
+        """Accumulate a fragmented message. Return None if the fragment is
+        to be ignored, return a string if the message is ready for further
+        processing.
+        """
 
         params = message.split(b',', 4)
         if len(params) == 1:
@@ -651,6 +666,14 @@ class FragmentAccumulator(object):
 
 class NotEncryptedError(RuntimeError):
     """We're currently not encrypting and something was requested requiring it"""
+    pass
+
+class UnreadableEncryptedMessage(NotEncryptedError):
+    """Got an encrypted message we cannot decrypt"""
+    pass
+
+class EncryptionFinishedError(NotEncryptedError):
+    """Tried to send encrypted message, but encrypted session already finished."""
     pass
 
 class UnencryptedMessage(RuntimeError):

@@ -177,8 +177,8 @@ class TestCommunicate(unittest.TestCase):
         # no more messages to process:
         self.assertEqual((None, None, None), self.process(self.pCtx, self.cUserState))
         # went encrypted
-        self.assertEqual(context.STATE_ENCRYPTED, self.cops.cSecState)
-        self.assertEqual(context.STATE_ENCRYPTED, self.pCtx.state)
+        self.assertEqual(context.OTRState.ENCRYPTED, self.cops.cSecState)
+        self.assertEqual(context.OTRState.ENCRYPTED, self.pCtx.state)
 
         # is untrusted
         self.assertFalse(self.cops.cSecTrust)
@@ -194,7 +194,7 @@ class TestCommunicate(unittest.TestCase):
                     'ERROR_START_AKE':True,
                 })
 
-        self.otrpsend(self.pCtx, b'hello!', context.FRAGMENT_SEND_ALL)
+        self.otrpsend(self.pCtx, b'hello!', context.FragmentSendPolicy.ALL)
         #self.assertEqual((False, 'hello!', None), self.otrcparse(self.crcv()))
         self.assertEqual((True, b'hello!', None), self.process(self.pCtx,
                 self.cUserState))
@@ -202,8 +202,8 @@ class TestCommunicate(unittest.TestCase):
         # no more messages to process:
         self.assertEqual((None, None, None), self.process(self.pCtx, self.cUserState))
         # went encrypted
-        self.assertEqual(context.STATE_ENCRYPTED, self.cops.cSecState)
-        self.assertEqual(context.STATE_ENCRYPTED, self.pCtx.state)
+        self.assertEqual(context.OTRState.ENCRYPTED, self.cops.cSecState)
+        self.assertEqual(context.OTRState.ENCRYPTED, self.pCtx.state)
 
         # is untrusted
         self.assertFalse(self.cops.cSecTrust)
@@ -231,8 +231,8 @@ class TestCommunicate(unittest.TestCase):
         # no more messages to process:
         self.assertEqual((None, None, None), self.process(self.pCtx, self.cUserState))
         # went encrypted
-        self.assertEqual(context.STATE_PLAINTEXT, self.cops.cSecState)
-        self.assertEqual(context.STATE_PLAINTEXT, self.pCtx.state)
+        self.assertEqual(context.OTRState.PLAINTEXT, self.cops.cSecState)
+        self.assertEqual(context.OTRState.PLAINTEXT, self.pCtx.state)
 
         # is untrusted
         self.assertFalse(self.cops.cSecTrust)
@@ -260,8 +260,8 @@ class TestCommunicate(unittest.TestCase):
         # no more messages to process:
         self.assertEqual((None, None, None), self.process(self.pCtx, self.cUserState))
         # went encrypted
-        self.assertEqual(context.STATE_PLAINTEXT, self.cops.cSecState)
-        self.assertEqual(context.STATE_PLAINTEXT, self.pCtx.state)
+        self.assertEqual(context.OTRState.PLAINTEXT, self.cops.cSecState)
+        self.assertEqual(context.OTRState.PLAINTEXT, self.pCtx.state)
 
         # is untrusted
         self.assertFalse(self.cops.cSecTrust)
@@ -284,7 +284,7 @@ class TestCommunicate(unittest.TestCase):
     def otrpparse(self, ctx, msg):
         return ctx.receiveMessage(msg, appdata=self)
 
-    def otrpsend(self, ctx, msg, fragment=context.FRAGMENT_SEND_ALL_BUT_FIRST):
+    def otrpsend(self, ctx, msg, fragment=context.FragmentSendPolicy.ALL_BUT_FIRST):
         return ctx.sendMessage(fragment, msg, appdata=self)
 
 
