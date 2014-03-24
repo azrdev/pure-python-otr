@@ -120,6 +120,7 @@ class Context(object):
         raise NotImplementedError
 
     def inject(self, msg, appdata=None):
+        """The application shall send `msg`. May be called while `sendMessage` is running."""
         raise NotImplementedError
 
     def policyOtrEnabled(self):
@@ -440,6 +441,10 @@ class Context(object):
         self.crypto.startAKE(appdata=appdata)
 
     def parse(self, message):
+        """Disassemble `message` string. Return an OTRMessage subclass instance
+        if found, or the original string.
+        """
+
         return proto.OTRMessage.parse(message, self)
 
     def maxMessageSize(self, appdata=None):
