@@ -101,7 +101,7 @@ class OTRMessage(object):
         return True
 
     @staticmethod
-    def parse(data, ctx):
+    def preParse(data, ctx):
         otrTagPos = data.find(OTRTAG)
         # no OTR tag, get tagged plaintext or only plaintext
         if otrTagPos == -1:
@@ -116,11 +116,14 @@ class OTRMessage(object):
             if data is None:
                 return None
             return OTRMessage.parse(data, ctx)
+        # OTRv3 message fragment
+        elif compare == b'|'[0]:
+            data = ctx.fragment.process(data[indexBase:])
+            if data is None:
+                return None
+            return OTRMessage.parse(data, ctx)
         else:
             ctx.fragment.discard()
-
-        # OTRv3 message fragment
-        #TODO
 
         hasq = compare == b'?'[0]
         hasv = compare == b'v'[0]
@@ -134,6 +137,14 @@ class OTRMessage(object):
                 end = indexBase+1
             payload = data[indexBase:end]
             return Query.parse(payload)
+
+        return data
+
+    @staticmethod
+    def parse(data, ctx):
+        data = preParse(data, ctx)
+        if isinstance(data, OTRMessage):
+            return data
 
         # OTR binary message
         if compare == b':'[0] and len(data) > indexBase + 4:
@@ -235,7 +246,7 @@ class TaggedPlaintext(Query):
 
 class GenericOTRMessage(OTRMessage):
     __slots__ = ['data']
-    fields  = []
+    fields  = [('sender_instag', 4), ('receiver_instag', 4),]
 
     def __init__(self, *args):
         super(GenericOTRMessage, self).__init__()

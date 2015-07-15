@@ -148,7 +148,9 @@ class Context(object):
         self.callbacks.inject(self.peer, msg, appdata)
 
     def policyOtrEnabled(self):
-        return self.getPolicy('ALLOW_V2') or self.getPolicy('ALLOW_V1')
+        return self.getPolicy('ALLOW_V3') \
+            or self.getPolicy('ALLOW_V2') \
+            or self.getPolicy('ALLOW_V1')
 
     def removeFingerprint(self, fingerprint):
         self.user.removeFingerprint(self.peer, fingerprint)
@@ -196,6 +198,21 @@ class Context(object):
             self.master.recentRcvdChild = self
 
     def receiveMessage(self, messageData, appdata=None):
+        """Handle the incoming message. Return the decrypted plaintext or
+        (None, []). If not an OTR message or an error, throws specific
+        exceptions (e.g. NotOTRMessage).
+        
+        Reads the needed parts of the message to relay it to the responsible
+        `Context`s (may be self) `processMessage`.
+        """
+
+        preParsedMessage = self.preParse(messageData)
+
+        # FIXME: no possibility for user to specify newCtxCb
+        context = self.user.getContext(self.user, instag)
+        return context.processMessage(messageData, appdata)
+
+    def processMessage(self, messageData, appdata=None):
         """Process the incoming `messageData` according to policies and current
         state. Return the decrypted plaintext or (None, []). If not an OTR
         message or an error, throws specific exceptions (e.g. NotOTRMessage).
@@ -297,7 +314,7 @@ class Context(object):
                 # so we don't need further protocol encryption
                 # also we can't add TLVs to arbitrary protocol messages
                 if tlvs:
-                    raise TypeError('can\'t add tlvs to protocol message')
+                    raise TypeError("can't add tlvs to protocol message")
             else:
                 # we got plaintext to send. encrypt it
                 msg = self.processOutgoingMessage(msg, flags, tlvs)
@@ -318,7 +335,7 @@ class Context(object):
         """
         #TODO: tlvs are discarded if not OTRState.ENCRYPTED ?
 
-        isQuery = isinstance(self.parse(msg), proto.Query)
+        isQuery = isinstance(self.preParse(msg), proto.Query)
         if isQuery:
             return self.user.getDefaultQueryMessage(self.getPolicy)
 
@@ -465,6 +482,13 @@ class Context(object):
 
         self.crypto.startAKE(appdata=appdata)
 
+    def preParse(self, message):
+        """Disassemble `message` string, only extracting instance tags or a
+        Query message
+        """
+
+        return proto.OTRMessage.preParse(message, self)
+
     def parse(self, message):
         """Disassemble `message` string. Return an OTRMessage subclass instance
         if found, or the original string.
@@ -590,7 +614,9 @@ class Account(object):
         to request OTR encryption.
         """
 
-        v  = '2' if policy('ALLOW_V2') else ''
+        v = ''
+        if policy('ALLOW_V2'): v += '2'
+        if policy('ALLOW_V3'): v += '3'
         msg = self.defaultQuery.format(versions=v)
         return msg.encode('ascii')
 
