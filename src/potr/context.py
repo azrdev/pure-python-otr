@@ -86,22 +86,52 @@ class Instag(object):
 SENT        = False
 RECEIVED    = True
 
+class Callbacks(object):
+    """Reference class of callbacks to be implemented by the `callbacks`
+    parameter to `Account`.
+    """
+
+    def getPolicy(self, recipient, policyName):
+        """Get the boolean value `policyName` is set to for given `recipient`.
+        Policy names are listed in the protocol definition.
+        """
+
+        raise NotImplementedError
+
+    def inject(self, recipient, msg, appdata=None):
+        """The application shall send `msg`. May be called while `sendMessage` is running."""
+
+        raise NotImplementedError
+
+    def loadPrivkey(self):
+        """Load and return from persistend storage our private key, or None."""
+
+        raise NotImplementedError
+
+    def savePrivkey(self):
+        """Our private key has changed, push it to persistent storage."""
+
+        raise NotImplementedError
+
+    def saveTrusts(self):
+        """The trusted fingerprints have changed, push data to persistent storage."""
+
+        raise NotImplementedError
+
+    def stateChange(self, oldState, newState):
+        """Called whenever the `OTRState` state changes."""
+        pass
 
 class Context(object):
     """Represents our end of one private communication channel to one
     recipient. There maybe multiple channels and thus `Context`s for one
     correspondent, organised as a master and multiple child contexts - all
     handled by the `Account` class.
-
-    In your application, subclass `Context` and overwrite the following methods:
-    - getPolicy
-    - inject
     """
 
     def __init__(self, account, peername, instag=Instag.MASTER):
         self.user = account
         self.peer = peername
-        self.policy = {}
         self.crypto = crypt.CryptEngine(self)
         self.tagOffer = OfferState.NOTSENT
         self.mayRetransmit = 0
@@ -109,25 +139,19 @@ class Context(object):
         self.lastRecv = 0
         self.lastMessage = None
         self.state = OTRState.PLAINTEXT
-        self.trustName = self.peer
         self.fragment = FragmentAccumulator()
 
     def getPolicy(self, key):
-        """Get the boolean value a policy named `key` is set to.
-        Policy names are listed in the protocol definition.
-        """
-
-        raise NotImplementedError
+        return self.callbacks.getPolicy(self.peer, key)
 
     def inject(self, msg, appdata=None):
-        """The application shall send `msg`. May be called while `sendMessage` is running."""
-        raise NotImplementedError
+        self.callbacks.inject(self.peer, msg, appdata)
 
     def policyOtrEnabled(self):
         return self.getPolicy('ALLOW_V2') or self.getPolicy('ALLOW_V1')
 
     def removeFingerprint(self, fingerprint):
-        self.user.removeFingerprint(self.trustName, fingerprint)
+        self.user.removeFingerprint(self.peer, fingerprint)
 
     def setTrust(self, fingerprint, trustLevel):
         """sets the trust level for the given fingerprint.
@@ -137,10 +161,10 @@ class Context(object):
             - 'smp' for smp-style verified keys
         """
 
-        self.user.setTrust(self.trustName, fingerprint, trustLevel)
+        self.user.setTrust(self.peer, fingerprint, trustLevel)
 
     def getTrust(self, fingerprint, default=None):
-        return self.user.getTrust(self.trustName, fingerprint, default)
+        return self.user.getTrust(self.peer, fingerprint, default)
 
     def setCurrentTrust(self, trustLevel):
         self.setTrust(self.crypto.theirPubkey.cfingerprint(), trustLevel)
@@ -336,6 +360,7 @@ class Context(object):
             self.setState(OTRState.PLAINTEXT)
 
     def setState(self, newstate):
+        self.callbacks.stateChange(self.state, newState)
         self.state = newstate
 
     def _wentEncrypted(self):
@@ -475,22 +500,16 @@ class Account(object):
     support.
     You must provide the link to your application by subclassing Account and
     implementing:
-    - `contextclass` - the Context class to use (subclass of `potr.Context`)
-    - loadPrivkey
-    - savePrivkey
-    - saveTrusts
     """
 
-    contextclass = Context
-
-    def __init__(self, name, protocol, maxMessageSize, privkey=None):
+    def __init__(self, name, protocol, maxMessageSize, callbacks=Callbacks(), privkey=None):
         self.name = name
         self.privkey = privkey
-        self.policy = {}
         self.protocol = protocol
         self.ctxs = {}
         self.trusts = {}
         self.maxMessageSize = maxMessageSize
+        self.callbacks = callbacks
         self.defaultQuery = '?OTRv{versions}?\nI would like to start ' \
                 'an Off-the-Record private conversation. However, you ' \
                 'do not have a plugin to support that.\nSee '\
@@ -504,29 +523,14 @@ class Account(object):
         """Get our private key, or generate if we don't have one, yet."""
 
         if self.privkey is None:
-            self.privkey = self.loadPrivkey()
+            self.privkey = self.callbacks.loadPrivkey()
         if self.privkey is None:
             if autogen is True:
                 self.privkey = compatcrypto.generateDefaultKey()
-                self.savePrivkey()
+                self.callbacks.savePrivkey()
             else:
                 raise LookupError
         return self.privkey
-
-    def loadPrivkey(self):
-        """Load and return from persistend storage our private key, or None."""
-
-        raise NotImplementedError
-
-    def savePrivkey(self):
-        """Our private key has changed, push it to persistent storage."""
-
-        raise NotImplementedError
-
-    def saveTrusts(self):
-        """The trusted fingerprints have changed, push data to persistent storage."""
-
-        raise NotImplementedError
 
     def getContext(self, uid, instag=Instag.MASTER, newCtxCb=None):
         """Lookup the context responsible for handling OTR messages, depending on
@@ -590,28 +594,28 @@ class Account(object):
         msg = self.defaultQuery.format(versions=v)
         return msg.encode('ascii')
 
-    def setTrust(self, key, fingerprint, trustLevel):
-        """Change trust for `fingerprint` associated with account `key` to `trustLevel`."""
+    def setTrust(self, peer, fingerprint, trustLevel):
+        """Change trust for `fingerprint` associated with account `peer` to `trustLevel`."""
 
-        if key not in self.trusts:
-            self.trusts[key] = {}
-        self.trusts[key][fingerprint] = trustLevel
-        self.saveTrusts()
+        if peer not in self.trusts:
+            self.trusts[peer] = {}
+        self.trusts[peer][fingerprint] = trustLevel
+        self.callbacks.saveTrusts()
 
-    def getTrust(self, key, fingerprint, default=None):
-        """Get trust status for `fingerprint` associated with account `key`."""
+    def getTrust(self, peer, fingerprint, default=None):
+        """Get trust status for `fingerprint` associated with account `peer`."""
 
-        if key not in self.trusts:
+        if peer not in self.trusts:
             return default
-        return self.trusts[key].get(fingerprint, default)
+        return self.trusts[peer].get(fingerprint, default)
 
-    def removeFingerprint(self, key, fingerprint):
-        """Delete `fingerprint` associated with account `key` from the trusted
+    def removeFingerprint(self, peer, fingerprint):
+        """Delete `fingerprint` associated with account `peer` from the trusted
         ones, resetting it to unknown.
         """
 
-        if key in self.trusts and fingerprint in self.trusts[key]:
-            del self.trusts[key][fingerprint]
+        if peer in self.trusts and fingerprint in self.trusts[peer]:
+            del self.trusts[peer][fingerprint]
 
 def contextMetric(ctx):
     return ctx.state << 65 | int(bool(ctx.getCurrentTrust())) << 64 | ctx.lastRecv
