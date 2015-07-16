@@ -129,9 +129,10 @@ class Context(object):
     handled by the `Account` class.
     """
 
-    def __init__(self, account, peername, instag=Instag.MASTER):
+    def __init__(self, account, peername, callbacks, instag=Instag.MASTER):
         self.user = account
         self.peer = peername
+        self.callbacks = callbacks
         self.crypto = crypt.CryptEngine(self)
         self.tagOffer = OfferState.NOTSENT
         self.mayRetransmit = 0
@@ -467,7 +468,9 @@ class Context(object):
     def handleQuery(self, message, appdata=None):
         """Act upon a received query message"""
 
-        if 2 in message.versions and self.getPolicy('ALLOW_V2'):
+        if 3 in message.versions and self.getPolicy('ALLOW_V3'):
+            self.authStartV3(appdata=appdata)
+        elif 2 in message.versions and self.getPolicy('ALLOW_V2'):
             self.authStartV2(appdata=appdata)
         elif 1 in message.versions and self.getPolicy('ALLOW_V1'):
             self.authStartV1(appdata=appdata)
@@ -480,6 +483,12 @@ class Context(object):
     def authStartV2(self, appdata=None):
         """Request a OTR version 2 communication from the correspondent"""
 
+        self.crypto.startAKE(appdata=appdata)
+
+    def authStartV3(self, appdata=None):
+        """Request a OTR version 3 communication from the correspondent"""
+
+        #TODO: implement & use v3 message structure (i.e. with instag)
         self.crypto.startAKE(appdata=appdata)
 
     def preParse(self, message):
@@ -566,7 +575,7 @@ class Account(object):
 
         if uid not in self.ctxs:
             # no master context found, create one first
-            newctx = self.contextclass(self, uid, instag=Instag.MASTER)
+            newctx = Context(self, uid, self.callbacks, instag=Instag.MASTER)
 
             newctx.master = newctx
             newctx.recentChild = newctx
@@ -586,7 +595,7 @@ class Account(object):
         elif instag >= Instag.MIN_VALID:
             if instag not in self.ctxs[uid]:
                 # no instance context found, create
-                ctx = self.contextclass(self, uid, instag=instag)
+                ctx = Context(self, uid, self.callbacks, instag=instag)
                 ctx.master = self.ctxs[uid][Instag.MASTER]
                 self.ctxs[uid][instag] = ctx
                 if callable(newCtxCb):
